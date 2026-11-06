@@ -1,0 +1,49 @@
+# Builds the self-hosted web image off the production server and hands it over as an artifact.
+# Lives on the `deploy` branch only, so `main` stays a clean fast-forward of upstream.
+name: Build web image
+
+on:
+  push:
+    branches: [deploy]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-web-image
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          docker build -t "photocraft-web:${GITHUB_SHA::12}" \
+            --build-arg CARGO_BUILD_JOBS=4 \
+            --build-arg PHOTOCRAFT_BUILD_SHA="$GITHUB_SHA" \
+            --build-arg PHOTOCRAFT_BUILD_DATE="$(date -u +%F)" \
+            .
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 127.0.0.1:18080:8080 "photocraft-web:${GITHUB_SHA::12}"
+          for _ in $(seq 1 15); do
+            curl -fsS http://127.0.0.1:18080/healthz && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/ | grep -qi '<html'
+          docker rm -f smoke
+
+      - name: Export image
+        run: docker save "photocraft-web:${GITHUB_SHA::12}" | gzip -6 > photocraft-web.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photocraft-web-image
+          path: photocraft-web.tar.gz
+          compression-level: 0
+          retention-days: 7
